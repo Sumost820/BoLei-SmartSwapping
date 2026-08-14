@@ -1,0 +1,708 @@
+{
+  "parameters": {
+    "I": 11,
+    "H": 1440,
+    "T_run": 30,
+    "T_swap": 8,
+    "T_to_station": 0,
+    "T_from_station": 20,
+    "C_init": 100,
+    "C_swap": 100,
+    "Delta": 10,
+    "C_min": 25,
+    "J": 48,
+    "K": 7
+  },
+  "upper_bound": {
+    "N": 42,
+    "minSwaps": 5,
+    "maxSwaps": 6,
+    "classBounds": [
+      [
+        5,
+        6
+      ],
+      [
+        6,
+        11
+      ]
+    ],
+    "maxVehicles": 11,
+    "tripUpperBound": 462,
+    "objectiveUpperBound": 13860
+  },
+  "solution": {
+    "total_trips": 458,
+    "objective": 13740,
+    "total_swaps": 64,
+    "station_makespan": 1264,
+    "assignments": {
+      "0": {
+        "trips": 42,
+        "segments": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "swap_positions": [
+          7,
+          14,
+          21,
+          28,
+          35
+        ]
+      },
+      "1": {
+        "trips": 42,
+        "segments": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "swap_positions": [
+          7,
+          14,
+          21,
+          28,
+          35
+        ]
+      },
+      "2": {
+        "trips": 42,
+        "segments": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "swap_positions": [
+          7,
+          14,
+          21,
+          28,
+          35
+        ]
+      },
+      "3": {
+        "trips": 42,
+        "segments": [
+          6,
+          6,
+          5,
+          5,
+          6,
+          7,
+          7
+        ],
+        "swap_positions": [
+          6,
+          12,
+          17,
+          22,
+          28,
+          35
+        ]
+      },
+      "4": {
+        "trips": 42,
+        "segments": [
+          5,
+          6,
+          7,
+          6,
+          6,
+          6,
+          6
+        ],
+        "swap_positions": [
+          5,
+          11,
+          18,
+          24,
+          30,
+          36
+        ]
+      },
+      "5": {
+        "trips": 42,
+        "segments": [
+          6,
+          6,
+          5,
+          5,
+          6,
+          7,
+          7
+        ],
+        "swap_positions": [
+          6,
+          12,
+          17,
+          22,
+          28,
+          35
+        ]
+      },
+      "6": {
+        "trips": 42,
+        "segments": [
+          5,
+          6,
+          7,
+          6,
+          6,
+          6,
+          6
+        ],
+        "swap_positions": [
+          5,
+          11,
+          18,
+          24,
+          30,
+          36
+        ]
+      },
+      "7": {
+        "trips": 41,
+        "segments": [
+          6,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "swap_positions": [
+          6,
+          13,
+          20,
+          27,
+          34
+        ]
+      },
+      "8": {
+        "trips": 41,
+        "segments": [
+          5,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6
+        ],
+        "swap_positions": [
+          5,
+          11,
+          17,
+          23,
+          29,
+          35
+        ]
+      },
+      "9": {
+        "trips": 41,
+        "segments": [
+          3,
+          7,
+          5,
+          6,
+          5,
+          5,
+          5,
+          5
+        ],
+        "swap_positions": [
+          3,
+          10,
+          15,
+          21,
+          26,
+          31,
+          36
+        ]
+      },
+      "10": {
+        "trips": 41,
+        "segments": [
+          4,
+          5,
+          7,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "swap_positions": [
+          4,
+          9,
+          16,
+          21,
+          26,
+          31,
+          36
+        ]
+      }
+    },
+    "station_schedule": [
+      {
+        "vehicle": 9,
+        "swap_index": 1,
+        "after_trip": 3,
+        "start": 90,
+        "end": 98
+      },
+      {
+        "vehicle": 10,
+        "swap_index": 1,
+        "after_trip": 4,
+        "start": 120,
+        "end": 128
+      },
+      {
+        "vehicle": 4,
+        "swap_index": 1,
+        "after_trip": 5,
+        "start": 150,
+        "end": 158
+      },
+      {
+        "vehicle": 6,
+        "swap_index": 1,
+        "after_trip": 5,
+        "start": 158,
+        "end": 166
+      },
+      {
+        "vehicle": 8,
+        "swap_index": 1,
+        "after_trip": 5,
+        "start": 166,
+        "end": 174
+      },
+      {
+        "vehicle": 3,
+        "swap_index": 1,
+        "after_trip": 6,
+        "start": 180,
+        "end": 188
+      },
+      {
+        "vehicle": 5,
+        "swap_index": 1,
+        "after_trip": 6,
+        "start": 188,
+        "end": 196
+      },
+      {
+        "vehicle": 7,
+        "swap_index": 1,
+        "after_trip": 6,
+        "start": 196,
+        "end": 204
+      },
+      {
+        "vehicle": 0,
+        "swap_index": 1,
+        "after_trip": 7,
+        "start": 210,
+        "end": 218
+      },
+      {
+        "vehicle": 1,
+        "swap_index": 1,
+        "after_trip": 7,
+        "start": 218,
+        "end": 226
+      },
+      {
+        "vehicle": 2,
+        "swap_index": 1,
+        "after_trip": 7,
+        "start": 226,
+        "end": 234
+      },
+      {
+        "vehicle": 10,
+        "swap_index": 2,
+        "after_trip": 9,
+        "start": 298,
+        "end": 306
+      },
+      {
+        "vehicle": 9,
+        "swap_index": 2,
+        "after_trip": 10,
+        "start": 328,
+        "end": 336
+      },
+      {
+        "vehicle": 4,
+        "swap_index": 2,
+        "after_trip": 11,
+        "start": 358,
+        "end": 366
+      },
+      {
+        "vehicle": 6,
+        "swap_index": 2,
+        "after_trip": 11,
+        "start": 366,
+        "end": 374
+      },
+      {
+        "vehicle": 8,
+        "swap_index": 2,
+        "after_trip": 11,
+        "start": 374,
+        "end": 382
+      },
+      {
+        "vehicle": 3,
+        "swap_index": 2,
+        "after_trip": 12,
+        "start": 388,
+        "end": 396
+      },
+      {
+        "vehicle": 5,
+        "swap_index": 2,
+        "after_trip": 12,
+        "start": 396,
+        "end": 404
+      },
+      {
+        "vehicle": 7,
+        "swap_index": 2,
+        "after_trip": 13,
+        "start": 434,
+        "end": 442
+      },
+      {
+        "vehicle": 0,
+        "swap_index": 2,
+        "after_trip": 14,
+        "start": 448,
+        "end": 456
+      },
+      {
+        "vehicle": 1,
+        "swap_index": 2,
+        "after_trip": 14,
+        "start": 456,
+        "end": 464
+      },
+      {
+        "vehicle": 2,
+        "swap_index": 2,
+        "after_trip": 14,
+        "start": 464,
+        "end": 472
+      },
+      {
+        "vehicle": 9,
+        "swap_index": 3,
+        "after_trip": 15,
+        "start": 506,
+        "end": 514
+      },
+      {
+        "vehicle": 10,
+        "swap_index": 3,
+        "after_trip": 16,
+        "start": 536,
+        "end": 544
+      },
+      {
+        "vehicle": 3,
+        "swap_index": 3,
+        "after_trip": 17,
+        "start": 566,
+        "end": 574
+      },
+      {
+        "vehicle": 5,
+        "swap_index": 3,
+        "after_trip": 17,
+        "start": 574,
+        "end": 582
+      },
+      {
+        "vehicle": 8,
+        "swap_index": 3,
+        "after_trip": 17,
+        "start": 582,
+        "end": 590
+      },
+      {
+        "vehicle": 4,
+        "swap_index": 3,
+        "after_trip": 18,
+        "start": 596,
+        "end": 604
+      },
+      {
+        "vehicle": 6,
+        "swap_index": 3,
+        "after_trip": 18,
+        "start": 604,
+        "end": 612
+      },
+      {
+        "vehicle": 7,
+        "swap_index": 3,
+        "after_trip": 20,
+        "start": 672,
+        "end": 680
+      },
+      {
+        "vehicle": 0,
+        "swap_index": 3,
+        "after_trip": 21,
+        "start": 686,
+        "end": 694
+      },
+      {
+        "vehicle": 1,
+        "swap_index": 3,
+        "after_trip": 21,
+        "start": 694,
+        "end": 702
+      },
+      {
+        "vehicle": 2,
+        "swap_index": 3,
+        "after_trip": 21,
+        "start": 702,
+        "end": 710
+      },
+      {
+        "vehicle": 9,
+        "swap_index": 4,
+        "after_trip": 21,
+        "start": 714,
+        "end": 722
+      },
+      {
+        "vehicle": 10,
+        "swap_index": 4,
+        "after_trip": 21,
+        "start": 722,
+        "end": 730
+      },
+      {
+        "vehicle": 3,
+        "swap_index": 4,
+        "after_trip": 22,
+        "start": 744,
+        "end": 752
+      },
+      {
+        "vehicle": 5,
+        "swap_index": 4,
+        "after_trip": 22,
+        "start": 752,
+        "end": 760
+      },
+      {
+        "vehicle": 8,
+        "swap_index": 4,
+        "after_trip": 23,
+        "start": 790,
+        "end": 798
+      },
+      {
+        "vehicle": 4,
+        "swap_index": 4,
+        "after_trip": 24,
+        "start": 804,
+        "end": 812
+      },
+      {
+        "vehicle": 6,
+        "swap_index": 4,
+        "after_trip": 24,
+        "start": 812,
+        "end": 820
+      },
+      {
+        "vehicle": 9,
+        "swap_index": 5,
+        "after_trip": 26,
+        "start": 892,
+        "end": 900
+      },
+      {
+        "vehicle": 10,
+        "swap_index": 5,
+        "after_trip": 26,
+        "start": 900,
+        "end": 908
+      },
+      {
+        "vehicle": 7,
+        "swap_index": 4,
+        "after_trip": 27,
+        "start": 910,
+        "end": 918
+      },
+      {
+        "vehicle": 0,
+        "swap_index": 4,
+        "after_trip": 28,
+        "start": 924,
+        "end": 932
+      },
+      {
+        "vehicle": 1,
+        "swap_index": 4,
+        "after_trip": 28,
+        "start": 932,
+        "end": 940
+      },
+      {
+        "vehicle": 2,
+        "swap_index": 4,
+        "after_trip": 28,
+        "start": 940,
+        "end": 948
+      },
+      {
+        "vehicle": 3,
+        "swap_index": 5,
+        "after_trip": 28,
+        "start": 952,
+        "end": 960
+      },
+      {
+        "vehicle": 5,
+        "swap_index": 5,
+        "after_trip": 28,
+        "start": 960,
+        "end": 968
+      },
+      {
+        "vehicle": 8,
+        "swap_index": 5,
+        "after_trip": 29,
+        "start": 998,
+        "end": 1006
+      },
+      {
+        "vehicle": 4,
+        "swap_index": 5,
+        "after_trip": 30,
+        "start": 1012,
+        "end": 1020
+      },
+      {
+        "vehicle": 6,
+        "swap_index": 5,
+        "after_trip": 30,
+        "start": 1020,
+        "end": 1028
+      },
+      {
+        "vehicle": 9,
+        "swap_index": 6,
+        "after_trip": 31,
+        "start": 1070,
+        "end": 1078
+      },
+      {
+        "vehicle": 10,
+        "swap_index": 6,
+        "after_trip": 31,
+        "start": 1078,
+        "end": 1086
+      },
+      {
+        "vehicle": 7,
+        "swap_index": 5,
+        "after_trip": 34,
+        "start": 1148,
+        "end": 1156
+      },
+      {
+        "vehicle": 0,
+        "swap_index": 5,
+        "after_trip": 35,
+        "start": 1162,
+        "end": 1170
+      },
+      {
+        "vehicle": 1,
+        "swap_index": 5,
+        "after_trip": 35,
+        "start": 1170,
+        "end": 1178
+      },
+      {
+        "vehicle": 2,
+        "swap_index": 5,
+        "after_trip": 35,
+        "start": 1178,
+        "end": 1186
+      },
+      {
+        "vehicle": 3,
+        "swap_index": 6,
+        "after_trip": 35,
+        "start": 1190,
+        "end": 1198
+      },
+      {
+        "vehicle": 5,
+        "swap_index": 6,
+        "after_trip": 35,
+        "start": 1198,
+        "end": 1206
+      },
+      {
+        "vehicle": 8,
+        "swap_index": 6,
+        "after_trip": 35,
+        "start": 1206,
+        "end": 1214
+      },
+      {
+        "vehicle": 4,
+        "swap_index": 6,
+        "after_trip": 36,
+        "start": 1220,
+        "end": 1228
+      },
+      {
+        "vehicle": 6,
+        "swap_index": 6,
+        "after_trip": 36,
+        "start": 1228,
+        "end": 1236
+      },
+      {
+        "vehicle": 9,
+        "swap_index": 7,
+        "after_trip": 36,
+        "start": 1248,
+        "end": 1256
+      },
+      {
+        "vehicle": 10,
+        "swap_index": 7,
+        "after_trip": 36,
+        "start": 1256,
+        "end": 1264
+      }
+    ]
+  }
+}
