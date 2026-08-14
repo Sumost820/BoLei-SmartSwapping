@@ -1,17 +1,17 @@
-import copy
 import json
 import math
 import os
 import pickle
 import random
 import time
-from gurobipy import GRB, Model, quicksum
+from bisect import insort_right
+import matplotlib.pyplot as plt
 
 # ============================================================
 # 1. 基本参数
 # ============================================================
 
-I = 30
+I = 20
 H = 1440
 T_run = 30
 T_swap = 8
@@ -43,25 +43,59 @@ MAX_PATTERNS_PER_TRIP = 250
 MAX_PATTERNS_EVALUATED = 120
 
 # 初始随机化贪心构造次数
-GREEDY_RESTARTS = 5
-GREEDY_RCL_SIZE = 3
+GREEDY_RESTARTS = 10
+GREEDY_RCL_SIZE = 5
 
-# 纯启发式破坏-修复
-LOCAL_SEARCH_ITERATIONS = 200
+# ALNS（不依赖Gurobi）
+ALNS_ITERATIONS = 6000
+
+# 每轮随机改变破坏规模，增加邻域多样性
+ALNS_DESTROY_FRACTION_MIN = 0.10
+ALNS_DESTROY_FRACTION_MAX = 0.30
+ALNS_DESTROY_MIN = 2
+ALNS_DESTROY_MAX = 12
+ALNS_TIME_CLUSTER_RADIUS = 4.0   # 以T_swap为单位
+
+# 修复参数
+ALNS_REPAIR_RCL_SIZE = 3
+
+# 1-step look-ahead：
+# 当前车辆先从“最高可行任务数”层中保留若干较优pattern，
+# 对每个pattern暂时插入后，再估计下一辆同质车辆能够达到的最高任务数。
+ALNS_LOOKAHEAD_CURRENT_EVAL = 80       # 当前层最多实际评价的pattern数
+ALNS_LOOKAHEAD_CANDIDATES = 6          # 当前最高可行trips层最多进入look-ahead的候选数
+ALNS_LOOKAHEAD_NEXT_EVAL = 40          # 每个分支中，下一辆车每个trips层最多评价的pattern数
+
+# 自适应权重
+ALNS_SEGMENT_LENGTH = 100
+ALNS_REACTION_FACTOR = 0.20
+ALNS_SCORE_GLOBAL_BEST = 8.0
+ALNS_SCORE_IMPROVE_CURRENT = 4.0
+ALNS_SCORE_ACCEPTED = 1.0
+ALNS_MIN_OPERATOR_WEIGHT = 0.10
+
+# 模拟退火接受准则：标量目标的单位大致是“趟”
+ALNS_INITIAL_TEMPERATURE = 0.75
+ALNS_COOLING_RATE = 0.9995
+ALNS_MIN_TEMPERATURE = 0.02
+ALNS_LOG_EVERY = 50
+
+# 保留旧名字，避免其他函数或外部脚本引用时报错
+LOCAL_SEARCH_ITERATIONS = ALNS_ITERATIONS
 LOCAL_DESTROY_FRACTION = 0.20
-LOCAL_DESTROY_MIN = 2
-LOCAL_DESTROY_MAX = 12
-LOCAL_REPAIR_RCL_SIZE = 3
+LOCAL_DESTROY_MIN = ALNS_DESTROY_MIN
+LOCAL_DESTROY_MAX = ALNS_DESTROY_MAX
+LOCAL_REPAIR_RCL_SIZE = ALNS_REPAIR_RCL_SIZE
 
 # Gurobi大邻域搜索
-RUN_GUROBI_LNS = True
-GUROBI_LNS_ITERATIONS = 20
-GUROBI_LNS_TIME_LIMIT = 8.0
+RUN_GUROBI_LNS = False
+GUROBI_LNS_ITERATIONS = 0
+GUROBI_LNS_TIME_LIMIT = 20.0
 GUROBI_LNS_MIP_GAP = 0.001
 GUROBI_LNS_FRACTION = 0.15
 GUROBI_LNS_MIN_VEHICLES = 2
 GUROBI_LNS_MAX_VEHICLES = 8
-GUROBI_LNS_PATTERNS_PER_VEHICLE = 18
+GUROBI_LNS_PATTERNS_PER_VEHICLE = 50
 GUROBI_OUTPUT = False
 
 OUTPUT_DIRECTORY = "."
@@ -73,10 +107,10 @@ OUTPUT_DIRECTORY = "."
 # pattern使用普通字典：
 # {
 #     "trips": 总任务数,
-#     "segments": [每块电池承担的任务数],
-#     "positions": [每次换电前累计完成的任务数],
-#     "earliest": [每次换电最早开始时刻],
-#     "latest": [每次换电最晚开始时刻]
+#     "segments": (每块电池承担的任务数),
+#     "positions": (每次换电前累计完成的任务数),
+#     "earliest": (每次换电最早开始时刻),
+#     "latest": (每次换电最晚开始时刻)
 # }
 #
 # event使用普通字典：
@@ -106,6 +140,13 @@ def patternKey(pattern):
 # 返回事件的唯一键值对，用于删除重复事件（车辆编号+换电次数+任务数）
 def eventSortKey(event):
     return event["start"], event["end"], event["vehicle"]
+
+# pattern和已有event在算法中只读，因此复制解时只复制外层列表。
+def copySolution(solution):
+    return {
+        "assignments": list(solution["assignments"]),
+        "schedule": list(solution["schedule"]),
+    }
 
 # 返回解中所有任务数的总和
 def totalTrips(solution):
@@ -330,10 +371,10 @@ def createPattern(trips, segments):
 
     return {
         "trips": trips,
-        "segments": list(segments),
-        "positions": positions,
-        "earliest": earliest,
-        "latest": latest,
+        "segments": tuple(segments),
+        "positions": tuple(positions),
+        "earliest": tuple(earliest),
+        "latest": tuple(latest),
     }
 
 
@@ -427,8 +468,8 @@ def tryInsertPattern(schedule, vehicle, pattern):
             return list(schedule), 0.0
         return None
 
-    trial_schedule = copy.deepcopy(schedule)
-    trial_schedule.sort(key=eventSortKey)
+    # schedule始终按eventSortKey有序；已有event只读，所以只复制列表引用。
+    trial_schedule = list(schedule)
 
     previous_start = None
     total_wait = 0.0
@@ -455,8 +496,8 @@ def tryInsertPattern(schedule, vehicle, pattern):
             "end": start + T_swap,
         }
 
-        trial_schedule.append(event)
-        trial_schedule.sort(key=eventSortKey)
+        # 二分定位后插入，避免每加入一个事件都对整个日程重新排序。
+        insort_right(trial_schedule, event, key=eventSortKey)
         previous_start = start
 
     final_finish = previous_start + T_swap + T_from_station + pattern["segments"][-1] * T_run
@@ -468,15 +509,11 @@ def tryInsertPattern(schedule, vehicle, pattern):
 
 #  计算插入评分，包括等待时间、结束时间、换电次数
 def insertionScore(old_schedule, new_schedule, pattern, added_wait):
-    old_end = 0.0
-    new_end = 0.0
-    if old_schedule:
-        old_end = max(event["end"] for event in old_schedule)
-    if new_schedule:
-        new_end = max(event["end"] for event in new_schedule)
+    # 日程按开始时刻排序，且所有换电服务时长相同，因此最后一个事件的end就是makespan。
+    old_end = old_schedule[-1]["end"] if old_schedule else 0.0
+    new_end = new_schedule[-1]["end"] if new_schedule else 0.0
 
     return (added_wait, max(0.0, new_end - old_end), patternSwaps(pattern))
-
 
 #  移除重复模式
 def removeDuplicatePatterns(patterns):
@@ -498,16 +535,18 @@ def chooseAndInsertPattern(schedule, vehicle, patterns_by_trips, rng, rcl_size, 
     在同一任务数下，按插入评分排序，并从前rcl_size个中随机选一个。
     """
     maxTrips = len(patterns_by_trips) - 1   # 最大任务数
+    candidateLimit = max(1, rcl_size)
 
     for trips in range(maxTrips, 0, -1):
-        patterns = list(patterns_by_trips[trips])   # 当前任务数下的所有模式
-
-        if extra_patterns is not None:
+        # 全局模式池在generatePatterns中已经去重；仅在加入额外模式时再次去重。
+        if extra_patterns is None:
+            patterns = patterns_by_trips[trips]
+        else:
+            patterns = list(patterns_by_trips[trips])
             for pattern in extra_patterns:
                 if pattern["trips"] == trips:
                     patterns.append(pattern)
-
-        patterns = removeDuplicatePatterns(patterns)
+            patterns = removeDuplicatePatterns(patterns)
 
         # 保留前一半 + 随机采样后一半
         if len(patterns) > MAX_PATTERNS_EVALUATED:
@@ -518,6 +557,7 @@ def chooseAndInsertPattern(schedule, vehicle, patterns_by_trips, rng, rcl_size, 
             sampleCount = min(sampleCount, len(remaining))
             patterns = head + rng.sample(remaining, sampleCount)
 
+        # 只保留当前最好的RCL候选，避免同时保存大量完整日程副本。
         candidates = []
         for pattern in patterns:
             result = tryInsertPattern(schedule, vehicle, pattern)
@@ -525,20 +565,20 @@ def chooseAndInsertPattern(schedule, vehicle, patterns_by_trips, rng, rcl_size, 
             if result is None:
                 continue
 
-            new_schedule = result[0]   #  插入后的新调度表
-            added_wait = result[1]     #  插入后的新等待时间
+            new_schedule = result[0]   # 插入后的新调度表
+            added_wait = result[1]     # 插入后的新等待时间
             score = insertionScore(schedule, new_schedule, pattern, added_wait)
 
             candidates.append([score, pattern, new_schedule])
+            candidates.sort(key=lambda item: item[0])
+            if len(candidates) > candidateLimit:
+                candidates.pop()
 
         if candidates:
-            candidates.sort(key=lambda item: item[0])  # 按插入评分排序
-            rcl_count = max(1, min(rcl_size, len(candidates)))
-            selected = rng.choice(candidates[:rcl_count])
-            return selected[1], selected[2]  #  返回模式、新调度表
+            selected = rng.choice(candidates)
+            return selected[1], selected[2]  # 返回模式、新调度表
 
     return None
-
 
 # ============================================================
 # 7. 初始解和纯启发式破坏-修复
@@ -577,23 +617,20 @@ def getDestroySize(for_gurobi):
     return min(size, LOCAL_DESTROY_MAX, I)
 
 
+# Gurobi-LNS仍保留原来的4种破坏逻辑，不影响下面的纯启发式ALNS。
 def selectDestroyedVehicles(solution, rng, iteration, for_gurobi):
-    """轮流使用四种简单破坏方式。"""
+    """供原Gurobi-LNS调用：轮流使用四种简单破坏方式。"""
     size = getDestroySize(for_gurobi)
     vehicles = list(range(I))
     method = iteration % 4
 
-    # 方法1：随机车辆。
     if method == 0 or not solution["schedule"]:
-        selected = rng.sample(vehicles, size)
-        return sorted(selected)
+        return sorted(rng.sample(vehicles, size))
 
-    # 方法2：选择某个时间附近的车辆
     if method == 1:
         centerEvent = rng.choice(solution["schedule"])
         center = centerEvent["start"]
         radius = 3 * T_swap
-
         related = []
         relatedSet = set()
 
@@ -604,20 +641,15 @@ def selectDestroyedVehicles(solution, rng, iteration, for_gurobi):
                     relatedSet.add(vehicle)
                     related.append(vehicle)
 
-        # 从相关车辆中随机选择要破坏的车辆
         relatedCount = min(size, len(related))
         selected = rng.sample(related, relatedCount)
 
-        # 不足则随机补充
         if len(selected) < size:
             remaining = [v for v in vehicles if v not in selected]
             selected.extend(rng.sample(remaining, size - len(selected)))
-
         return sorted(selected)
 
-    # 方法3：优先破坏高任务车辆
     if method == 2:
-        # 按任务数和换电次数排序
         ranked = sorted(
             vehicles,
             key=lambda vehicle: (
@@ -626,50 +658,204 @@ def selectDestroyedVehicles(solution, rng, iteration, for_gurobi):
             ),
             reverse=True,
         )
-
         poolSize = max(size, min(len(ranked), 2 * size))
-        selected = rng.sample(ranked[:poolSize], size)
-        return sorted(selected)
+        return sorted(rng.sample(ranked[:poolSize], size))
 
-    if method == 3:
-        # 方法4：优先破坏低任务、换电较多的车辆
-        ranked = sorted(
-            vehicles,
-            key=lambda vehicle: (
-                solution["assignments"][vehicle]["trips"],
-                -patternSwaps(solution["assignments"][vehicle]),
-            ),
+    ranked = sorted(
+        vehicles,
+        key=lambda vehicle: (
+            solution["assignments"][vehicle]["trips"],
+            -patternSwaps(solution["assignments"][vehicle]),
+        ),
+    )
+    poolSize = max(size, min(len(ranked), 2 * size))
+    return sorted(rng.sample(ranked[:poolSize], size))
+
+
+# ============================================================
+# 7.1 ALNS破坏算子
+# ============================================================
+
+def getAlnsDestroySize(rng):
+    fraction = rng.uniform(ALNS_DESTROY_FRACTION_MIN, ALNS_DESTROY_FRACTION_MAX)
+    size = max(ALNS_DESTROY_MIN, math.ceil(I * fraction))
+    return min(size, ALNS_DESTROY_MAX, I)
+
+
+def randomizedTopSelection(ranked, size, rng, pool_factor=2):
+    """从排名靠前的候选池中随机抽取，兼顾针对性和随机性。"""
+    if size >= len(ranked):
+        return sorted(ranked)
+
+    poolSize = min(len(ranked), max(size, pool_factor * size))
+    return sorted(rng.sample(ranked[:poolSize], size))
+
+
+def vehicleWaitingTime(solution, vehicle):
+    """计算某辆车在换电站前累计等待时间。"""
+    pattern = solution["assignments"][vehicle]
+    events = [e for e in solution["schedule"] if e["vehicle"] == vehicle]
+    events.sort(key=lambda e: e["swap_index"])
+
+    previousStart = None
+    totalWait = 0.0
+
+    for r, event in enumerate(events):
+        if r == 0:
+            release = pattern["segments"][0] * T_run + T_to_station
+        else:
+            release = (
+                previousStart + T_swap + T_from_station
+                + pattern["segments"][r] * T_run + T_to_station
+            )
+        totalWait += max(0.0, event["start"] - release)
+        previousStart = event["start"]
+
+    return totalWait
+
+
+def vehicleMeanSwapTime(solution, vehicle):
+    starts = [e["start"] for e in solution["schedule"] if e["vehicle"] == vehicle]
+    if not starts:
+        return H / 2.0
+    return sum(starts) / len(starts)
+
+
+def destroyRandom(solution, rng, size):
+    return sorted(rng.sample(list(range(I)), size))
+
+
+def destroyTimeCluster(solution, rng, size):
+    """移除换电时刻聚集在同一时间区域的车辆，专门松开站点拥堵。"""
+    if not solution["schedule"]:
+        return destroyRandom(solution, rng, size)
+
+    center = rng.choice(solution["schedule"])["start"]
+    radius = ALNS_TIME_CLUSTER_RADIUS * T_swap
+    related = []
+    seen = set()
+
+    for event in solution["schedule"]:
+        if abs(event["start"] - center) <= radius and event["vehicle"] not in seen:
+            seen.add(event["vehicle"])
+            related.append(event["vehicle"])
+
+    selected = related[:]
+    rng.shuffle(selected)
+    selected = selected[:size]
+
+    if len(selected) < size:
+        remaining = [v for v in range(I) if v not in selected]
+        selected.extend(rng.sample(remaining, size - len(selected)))
+
+    return sorted(selected)
+
+
+def destroyHighTrip(solution, rng, size):
+    ranked = sorted(
+        range(I),
+        key=lambda v: (
+            solution["assignments"][v]["trips"],
+            -patternSwaps(solution["assignments"][v]),
+        ),
+        reverse=True,
+    )
+    return randomizedTopSelection(ranked, size, rng)
+
+
+def destroyLowTripManySwaps(solution, rng, size):
+    """优先释放任务少但占用换电站较多的车辆。"""
+    ranked = sorted(
+        range(I),
+        key=lambda v: (
+            solution["assignments"][v]["trips"],
+            -patternSwaps(solution["assignments"][v]),
+        ),
+    )
+    return randomizedTopSelection(ranked, size, rng)
+
+
+def destroyHighWait(solution, rng, size):
+    """优先释放等待时间长的车辆，尝试重排拥堵链。"""
+    ranked = sorted(
+        range(I),
+        key=lambda v: vehicleWaitingTime(solution, v),
+        reverse=True,
+    )
+    return randomizedTopSelection(ranked, size, rng)
+
+
+def destroyRelated(solution, rng, size):
+    """Shaw-style related removal：移除与随机种子车辆特征相近的一组车辆。"""
+    vehicles = list(range(I))
+    seed = rng.choice(vehicles)
+    seedPattern = solution["assignments"][seed]
+    seedTrips = seedPattern["trips"]
+    seedSwaps = patternSwaps(seedPattern)
+    seedTime = vehicleMeanSwapTime(solution, seed)
+
+    others = [v for v in vehicles if v != seed]
+    others.sort(
+        key=lambda v: (
+            6.0 * abs(solution["assignments"][v]["trips"] - seedTrips)
+            + 2.0 * abs(patternSwaps(solution["assignments"][v]) - seedSwaps)
+            + abs(vehicleMeanSwapTime(solution, v) - seedTime) / max(1.0, T_swap)
         )
+    )
 
-        poolSize = max(size, min(len(ranked), 2 * size))
-        selected = rng.sample(ranked[:poolSize], size)
-        return sorted(selected)
+    need = size - 1
+    if need <= 0:
+        return [seed]
 
-# 修复破坏的车辆
-def repairDestroyedVehicles(solution, destroyed, patterns_by_trips, rng):
+    poolSize = min(len(others), max(need, 2 * need))
+    selected = [seed] + rng.sample(others[:poolSize], need)
+    return sorted(selected)
+
+
+ALNS_DESTROY_OPERATORS = {
+    "random": destroyRandom,
+    "time_cluster": destroyTimeCluster,
+    "high_trip": destroyHighTrip,
+    "low_trip_many_swaps": destroyLowTripManySwaps,
+    "high_wait": destroyHighWait,
+    "related": destroyRelated,
+}
+
+
+# ============================================================
+# 7.2 ALNS修复算子
+# ============================================================
+
+def makePartialSolution(solution, destroyed):
     destroyedSet = set(destroyed)
-    assignments = list(solution["assignments"]) 
+    assignments = list(solution["assignments"])
 
-    # 1. 清空被破坏车辆的模式
     for vehicle in destroyed:
         assignments[vehicle] = None
 
-    # 2. 保留未被破坏车辆的换电事件
-    schedule = []
-    for event in solution["schedule"]:
-        if event["vehicle"] not in destroyedSet:
-            schedule.append(copy.deepcopy(event))
-    schedule.sort(key=eventSortKey)
+    schedule = [
+        event for event in solution["schedule"]
+        if event["vehicle"] not in destroyedSet
+    ]
+    return assignments, schedule
 
-    # 3. 按车辆编号确定修复顺序
-    order = sorted(destroyed)
 
-    # 4. 逐车修复
+def repairSequential(solution, destroyed, patterns_by_trips, rng, order, rcl_size):
+    """顺序修复框架，供greedy_best与randomized_rcl复用。"""
+    assignments, schedule = makePartialSolution(solution, destroyed)
+
     for vehicle in order:
+        # 旧pattern仅作为额外候选，避免它因为全局pattern截断而丢失。
+        # 对同质车辆而言，vehicle编号本身不改变可行pattern集合。
         currentPattern = solution["assignments"][vehicle]
-
-        result = chooseAndInsertPattern(schedule, vehicle, patterns_by_trips, rng, 
-                                           LOCAL_REPAIR_RCL_SIZE, extra_patterns=[currentPattern])
+        result = chooseAndInsertPattern(
+            schedule,
+            vehicle,
+            patterns_by_trips,
+            rng,
+            rcl_size,
+            extra_patterns=[currentPattern],
+        )
 
         if result is None:
             return None
@@ -680,31 +866,449 @@ def repairDestroyedVehicles(solution, destroyed, patterns_by_trips, rng):
     return {"assignments": assignments, "schedule": schedule}
 
 
-def runLocalSearch(initial_solution, patterns_by_trips, rng):
-    current = copy.deepcopy(initial_solution)
-    best = copy.deepcopy(initial_solution)
+def repairGreedyBest(solution, destroyed, patterns_by_trips, rng):
+    """修复算子1：沿用原版，高任务旧pattern车辆优先 + 当前最优pattern插入。"""
+    order = sorted(
+        destroyed,
+        key=lambda v: (
+            -solution["assignments"][v]["trips"],
+            patternSwaps(solution["assignments"][v]),
+        ),
+    )
+    return repairSequential(solution, destroyed, patterns_by_trips, rng, order, rcl_size=1)
 
-    for iteration in range(LOCAL_SEARCH_ITERATIONS):
-        # 选择要破坏的车辆
-        destroyed = selectDestroyedVehicles(current, rng, iteration, for_gurobi=False)
-        # 修复破坏的车辆
-        candidate = repairDestroyedVehicles(current, destroyed, patterns_by_trips, rng)
 
-        if candidate is None:
-            continue
+def repairRandomizedRcl(solution, destroyed, patterns_by_trips, rng):
+    """修复算子2：沿用原版，随机车辆顺序 + 同一最高可行trips层的RCL随机插入。"""
+    order = list(destroyed)
+    rng.shuffle(order)
+    return repairSequential(
+        solution,
+        destroyed,
+        patterns_by_trips,
+        rng,
+        order,
+        rcl_size=ALNS_REPAIR_RCL_SIZE,
+    )
 
-        # 评估修复后的解是否更好，或者是否相同但随机接受
-        if solutionQuality(candidate) > solutionQuality(current):
-            current = candidate
-        elif totalTrips(candidate) == totalTrips(current):
-            if rng.random() < 0.05:
+
+def deterministicPatternSubset(patterns, limit):
+    """
+    look-ahead专用的确定性pattern子集。
+
+    与普通RCL中的随机采样不同，look-ahead需要公平比较多个分支；
+    因此每个分支在同一trips层使用相同的pattern子集：
+    前一半保留排序靠前pattern，后一半从剩余pattern中均匀抽取。
+    """
+    if len(patterns) <= limit:
+        return list(patterns)
+
+    limit = max(1, limit)
+    headCount = max(1, limit // 2)
+    head = list(patterns[:headCount])
+    remaining = patterns[headCount:]
+    sampleCount = limit - len(head)
+
+    if sampleCount <= 0 or not remaining:
+        return head
+
+    if sampleCount >= len(remaining):
+        return head + list(remaining)
+
+    if sampleCount == 1:
+        return head + [remaining[len(remaining) // 2]]
+
+    # 在remaining中均匀取点，避免每个look-ahead分支因随机采样产生“伪差异”。
+    indices = []
+    lastIndex = len(remaining) - 1
+    for k in range(sampleCount):
+        index = round(k * lastIndex / (sampleCount - 1))
+        if not indices or index != indices[-1]:
+            indices.append(index)
+
+    # round极少数情况下可能产生重复索引，顺序补足。
+    if len(indices) < sampleCount:
+        used = set(indices)
+        for index in range(len(remaining)):
+            if index not in used:
+                indices.append(index)
+                used.add(index)
+                if len(indices) >= sampleCount:
+                    break
+
+    return head + [remaining[index] for index in indices[:sampleCount]]
+
+
+def collectHighestTripCandidates(
+    schedule,
+    vehicle,
+    patterns_by_trips,
+    eval_limit,
+    top_limit,
+):
+    """
+    从最高任务数开始寻找可行pattern。
+    一旦某个trips层存在可行pattern，就只在该层保留前top_limit个候选，
+    因而始终保持“总任务数优先”的目标层级。
+
+    返回元素：(insertion_score, pattern, new_schedule)
+    """
+    maxTrips = len(patterns_by_trips) - 1
+
+    for trips in range(maxTrips, 0, -1):
+        patterns = deterministicPatternSubset(
+            patterns_by_trips[trips],
+            eval_limit,
+        )
+
+        candidates = []
+        for pattern in patterns:
+            result = tryInsertPattern(schedule, vehicle, pattern)
+            if result is None:
+                continue
+
+            newSchedule, addedWait = result
+            score = insertionScore(schedule, newSchedule, pattern, addedWait)
+            candidates.append((score, pattern, newSchedule))
+
+        if candidates:
+            candidates.sort(key=lambda item: item[0])
+            return candidates[:max(1, top_limit)]
+
+    return []
+
+
+def evaluateNextVehicleBest(
+    schedule,
+    vehicle,
+    patterns_by_trips,
+    eval_limit,
+):
+    """
+    在给定临时schedule下，估计“下一辆同质车辆”的最佳可插入水平。
+
+    返回：
+        bestTrips：下一辆车能够达到的最高任务数；
+        bestScore：在该最高任务数层中的最佳插入评分。
+
+    这里只做一层前瞻，不真正把下一辆车提交到当前解中。
+    """
+    maxTrips = len(patterns_by_trips) - 1
+
+    for trips in range(maxTrips, 0, -1):
+        patterns = deterministicPatternSubset(
+            patterns_by_trips[trips],
+            eval_limit,
+        )
+
+        bestScore = None
+        for pattern in patterns:
+            result = tryInsertPattern(schedule, vehicle, pattern)
+            if result is None:
+                continue
+
+            newSchedule, addedWait = result
+            score = insertionScore(schedule, newSchedule, pattern, addedWait)
+
+            if bestScore is None or score < bestScore:
+                bestScore = score
+
+        if bestScore is not None:
+            return trips, bestScore
+
+    return 0, (float("inf"), float("inf"), float("inf"))
+
+
+def repairOneStepLookAhead(solution, destroyed, patterns_by_trips, rng):
+    """
+    修复算子3：1-step look-ahead（pattern-oriented）。
+
+    被破坏车辆完全同质，因此不计算vehicle-level regret；
+    vehicle编号只作为event标签，修复时按编号取一个“匿名车辆槽位”。
+
+    每一步：
+    1. 找当前最高可行trips层的若干优质pattern；
+    2. 对每个候选pattern暂时插入；
+    3. 在该临时schedule下，看“下一辆同质车”最高还能完成多少trips；
+    4. 优先选择给下一辆车保留最高trips机会的pattern；
+    5. 若前瞻trips相同，再比较下一辆车的插入代价，最后比较当前pattern代价；
+    6. 提交选中的pattern，再对剩余车辆重复上述过程。
+
+    因为当前候选全部来自同一个最高可行trips层，所以比较重点是：
+    “当前同样完成这么多任务时，哪个pattern对下一辆车最友好”。
+    """
+    assignments, schedule = makePartialSolution(solution, destroyed)
+    remaining = sorted(destroyed)
+
+    while remaining:
+        # 同质车辆：这里选哪个vehicle标签并不改变pattern可行性。
+        vehicle = remaining[0]
+
+        candidates = collectHighestTripCandidates(
+            schedule,
+            vehicle,
+            patterns_by_trips,
+            eval_limit=ALNS_LOOKAHEAD_CURRENT_EVAL,
+            top_limit=ALNS_LOOKAHEAD_CANDIDATES,
+        )
+
+        if not candidates:
+            return None
+
+        if len(remaining) == 1:
+            # 最后一辆没有后继车辆，直接取当前最佳插入。
+            selected = candidates[0]
+        else:
+            nextVehicle = remaining[1]
+            selected = None
+            bestPriority = None
+
+            for candidate in candidates:
+                currentScore, currentPattern, candidateSchedule = candidate
+
+                nextTrips, nextScore = evaluateNextVehicleBest(
+                    candidateSchedule,
+                    nextVehicle,
+                    patterns_by_trips,
+                    eval_limit=ALNS_LOOKAHEAD_NEXT_EVAL,
+                )
+
+                # Python tuple按字典序比较；越大越优。
+                # 第一优先：下一辆车还能达到的trips越多越好。
+                # 后续优先：下一辆、当前车辆的等待/makespan/swaps越小越好。
+                priority = (
+                    nextTrips,
+                    -nextScore[0],
+                    -nextScore[1],
+                    -nextScore[2],
+                    -currentScore[0],
+                    -currentScore[1],
+                    -currentScore[2],
+                )
+
+                if bestPriority is None or priority > bestPriority:
+                    bestPriority = priority
+                    selected = candidate
+
+        _, selectedPattern, selectedSchedule = selected
+        assignments[vehicle] = selectedPattern
+        schedule = selectedSchedule
+        remaining.pop(0)
+
+    return {"assignments": assignments, "schedule": schedule}
+
+
+ALNS_REPAIR_OPERATORS = {
+    "greedy_best": repairGreedyBest,
+    "randomized_rcl": repairRandomizedRcl,
+    "one_step_look_ahead": repairOneStepLookAhead,
+}
+
+
+# ============================================================
+# 7.3 ALNS自适应选择与接受准则
+# ============================================================
+
+def rouletteSelect(weights, rng):
+    totalWeight = sum(max(ALNS_MIN_OPERATOR_WEIGHT, value) for value in weights.values())
+    pick = rng.random() * totalWeight
+    cumulative = 0.0
+
+    for name, value in weights.items():
+        cumulative += max(ALNS_MIN_OPERATOR_WEIGHT, value)
+        if pick <= cumulative:
+            return name
+
+    return next(reversed(weights))
+
+
+def updateOperatorWeights(weights, scores, uses):
+    rho = ALNS_REACTION_FACTOR
+
+    for name in weights:
+        if uses[name] > 0:
+            averageReward = scores[name] / uses[name]
+            weights[name] = max(
+                ALNS_MIN_OPERATOR_WEIGHT,
+                (1.0 - rho) * weights[name] + rho * averageReward,
+            )
+        scores[name] = 0.0
+        uses[name] = 0
+
+
+def alnsScalarScore(solution):
+    """
+    仅用于模拟退火的连续标量分数。
+    保证“多1趟”始终比换电次数/makespan的次级改善更重要。
+    """
+    swapPenalty = 0.10 * totalSwaps(solution) / max(1.0, float(stationCapacity))
+    makespanPenalty = 0.01 * stationMakespan(solution) / max(1.0, float(H))
+    return totalTrips(solution) - swapPenalty - makespanPenalty
+
+
+def acceptAlnsCandidate(current, candidate, temperature, rng):
+    if solutionQuality(candidate) > solutionQuality(current):
+        return True
+
+    delta = alnsScalarScore(candidate) - alnsScalarScore(current)
+    if delta >= 0.0:
+        return True
+
+    probability = math.exp(delta / max(ALNS_MIN_TEMPERATURE, temperature))
+    return rng.random() < probability
+
+
+def runALNS(initial_solution, patterns_by_trips, rng):
+    current = copySolution(initial_solution)
+    best = copySolution(initial_solution)
+
+    destroyWeights = {name: 1.0 for name in ALNS_DESTROY_OPERATORS}
+    repairWeights = {name: 1.0 for name in ALNS_REPAIR_OPERATORS}
+    destroyScores = {name: 0.0 for name in ALNS_DESTROY_OPERATORS}
+    repairScores = {name: 0.0 for name in ALNS_REPAIR_OPERATORS}
+    destroyUses = {name: 0 for name in ALNS_DESTROY_OPERATORS}
+    repairUses = {name: 0 for name in ALNS_REPAIR_OPERATORS}
+
+    temperature = ALNS_INITIAL_TEMPERATURE
+
+    history = {
+        "iterations": [0],
+        "currentTrips": [totalTrips(current)],
+        "bestTrips": [totalTrips(best)],
+        "temperature": [temperature],
+        "destroyOperator": [None],
+        "repairOperator": [None],
+        "accepted": [True],
+        "destroyWeightHistory": {name: [(0, 1.0)] for name in ALNS_DESTROY_OPERATORS},
+        "repairWeightHistory": {name: [(0, 1.0)] for name in ALNS_REPAIR_OPERATORS},
+    }
+
+    for iteration in range(ALNS_ITERATIONS):
+        destroyName = rouletteSelect(destroyWeights, rng)
+        repairName = rouletteSelect(repairWeights, rng)
+        destroyUses[destroyName] += 1
+        repairUses[repairName] += 1
+
+        size = getAlnsDestroySize(rng)
+        destroyed = ALNS_DESTROY_OPERATORS[destroyName](current, rng, size)
+        candidate = ALNS_REPAIR_OPERATORS[repairName](
+            current,
+            destroyed,
+            patterns_by_trips,
+            rng,
+        )
+
+        accepted = False
+        reward = 0.0
+        previousQuality = solutionQuality(current)
+
+        if candidate is not None:
+            candidateQuality = solutionQuality(candidate)
+            globalBest = candidateQuality > solutionQuality(best)
+            currentImprovement = candidateQuality > previousQuality
+            accepted = acceptAlnsCandidate(current, candidate, temperature, rng)
+
+            if accepted:
                 current = candidate
 
-        if solutionQuality(current) > solutionQuality(best):
-            best = copy.deepcopy(current)
+                if globalBest:
+                    best = copySolution(candidate)
+                    reward = ALNS_SCORE_GLOBAL_BEST
+                elif currentImprovement:
+                    reward = ALNS_SCORE_IMPROVE_CURRENT
+                else:
+                    reward = ALNS_SCORE_ACCEPTED
 
-    return best
+        destroyScores[destroyName] += reward
+        repairScores[repairName] += reward
 
+        temperature = max(
+            ALNS_MIN_TEMPERATURE,
+            temperature * ALNS_COOLING_RATE,
+        )
+
+        step = iteration + 1
+        if step % ALNS_SEGMENT_LENGTH == 0:
+            updateOperatorWeights(destroyWeights, destroyScores, destroyUses)
+            updateOperatorWeights(repairWeights, repairScores, repairUses)
+
+            for name in destroyWeights:
+                history["destroyWeightHistory"][name].append((step, destroyWeights[name]))
+            for name in repairWeights:
+                history["repairWeightHistory"][name].append((step, repairWeights[name]))
+
+        history["iterations"].append(step)
+        history["currentTrips"].append(totalTrips(current))
+        history["bestTrips"].append(totalTrips(best))
+        history["temperature"].append(temperature)
+        history["destroyOperator"].append(destroyName)
+        history["repairOperator"].append(repairName)
+        history["accepted"].append(accepted)
+
+        if step % ALNS_LOG_EVERY == 0 or reward == ALNS_SCORE_GLOBAL_BEST:
+            candidateTrips = totalTrips(candidate) if candidate is not None else "不可行"
+            print(
+                f"ALNS迭代{step}/{ALNS_ITERATIONS}："
+                f"破坏={destroyName}, 修复={repairName}, 释放车辆={len(destroyed)}, "
+                f"候选={candidateTrips}, 当前={totalTrips(current)}, 最好={totalTrips(best)}, "
+                f"接受={accepted}, T={temperature:.4f}"
+            )
+
+    print("\nALNS最终破坏算子权重：")
+    for name, weight in sorted(destroyWeights.items(), key=lambda item: item[1], reverse=True):
+        print(f"  {name}: {weight:.4f}")
+
+    print("ALNS最终修复算子权重：")
+    for name, weight in sorted(repairWeights.items(), key=lambda item: item[1], reverse=True):
+        print(f"  {name}: {weight:.4f}")
+
+    return best, history
+
+
+# 为旧代码保留同名入口。
+def runLocalSearch(initial_solution, patterns_by_trips, rng):
+    return runALNS(initial_solution, patterns_by_trips, rng)
+
+
+def plotAlnsHistory(history):
+    """绘制并保存ALNS阶段的搬运次数迭代曲线。"""
+    os.makedirs(OUTPUT_DIRECTORY, exist_ok=True)
+    figurePath = os.path.join(
+        OUTPUT_DIRECTORY,
+        f"alns_iterations_I_{I}_H_{H}.png",
+    )
+
+    plt.figure(figsize=(9, 5))
+    plt.plot(
+        history["iterations"],
+        history["currentTrips"],
+        linewidth=1.2,
+        label="Current solution",
+    )
+    plt.plot(
+        history["iterations"],
+        history["bestTrips"],
+        linewidth=2.0,
+        label="Best solution",
+    )
+    plt.xlabel("ALNS iteration")
+    plt.ylabel("Total trips")
+    plt.title(f"ALNS convergence (I={I}, H={H})")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(figurePath, dpi=300, bbox_inches="tight")
+
+    print(f"ALNS迭代曲线：{figurePath}")
+    plt.show()
+    plt.close()
+
+    return figurePath
+
+
+# 兼容旧函数名。
+def plotLocalSearchHistory(history):
+    return plotAlnsHistory(history)
 
 # ============================================================
 # 8. Gurobi大邻域搜索
@@ -772,273 +1376,6 @@ def currentEventStartMap(solution):
         start_map[key] = event["start"]
 
     return start_map
-
-# Gurobi大邻域搜索迭代函数 - 修复破坏的车辆
-def runGurobiLnsIteration(solution, destroyed, patterns_by_trips, upper_bound, rng):
-
-    destroyed_set = set(destroyed)
-
-    # 1. 保留未被破坏车辆的换电事件和行程数
-    fixed_schedule = []
-    fixed_trips = 0
-
-    for vehicle in range(I):
-        if vehicle not in destroyed_set:
-            fixed_trips += solution["assignments"][vehicle]["trips"]
-
-    for event in solution["schedule"]:
-        if event["vehicle"] not in destroyed_set:
-            fixed_schedule.append(copy.deepcopy(event))
-    fixed_schedule.sort(key=eventSortKey)
-
-    # 2. 为破坏的车辆选择候选模式
-    candidate_patterns = {}
-    for vehicle in destroyed:
-        candidate_patterns[vehicle] = selectLnsCandidatePatterns(
-            solution["assignments"][vehicle],
-            patterns_by_trips,
-            upper_bound["N"],
-            rng,
-        )
-
-    model = Model("BatterySwap_Gurobi_LNS_Simple")
-    model.Params.OutputFlag = 1 if GUROBI_OUTPUT else 0
-    model.Params.TimeLimit = GUROBI_LNS_TIME_LIMIT
-    model.Params.MIPGap = GUROBI_LNS_MIP_GAP
-    model.Params.Seed = SEED
-
-    y = {}    # 二元变量，车辆vehicle选择模式p
-    start_vars = {}    # 连续变量，车辆vehicle模式p第r个换电事件的开始时间
-    optional_events = []
-    big_m = 2 * H + swapExtraTime + T_run
-
-    # 创建变量
-    for vehicle in destroyed:
-        patterns = candidate_patterns[vehicle]
-        for p in range(len(patterns)):
-            pattern = patterns[p]
-            y[vehicle, p] = model.addVar(vtype=GRB.BINARY, name=f"y_{vehicle}_{p}")
-            for r in range(patternSwaps(pattern)):
-                start_vars[vehicle, p, r] = model.addVar(lb=0.0, ub=max(0.0, float(latestSwap)), vtype=GRB.CONTINUOUS, name=f"s_{vehicle}_{p}_{r}")
-
-    model.update()
-
-    # 每辆自由车辆选择一个模式
-    for vehicle in destroyed:
-        patterns = candidate_patterns[vehicle]
-        # 约束1、每辆自由车辆选择一个模式p
-        model.addConstr(quicksum(y[vehicle, p] for p in range(len(patterns))) == 1, name=f"choose_pattern_{vehicle}")
-
-        for p in range(len(patterns)):
-            pattern = patterns[p]
-            select_var = y[vehicle, p]
-
-            for r in range(patternSwaps(pattern)):
-                start_var = start_vars[vehicle, p, r]
-                # 约束2、车辆vehicle模式p第r个换电事件的开始时间在earliest[r]和latest[r]之间
-                model.addConstr(start_var >= pattern["earliest"][r] * select_var, name=f"window_lb_{vehicle}_{p}_{r}")
-                model.addConstr(start_var <= pattern["latest"][r] * select_var, name=f"window_ub_{vehicle}_{p}_{r}")
-                # optional_events 记录所有可选的事件，便于后续批量处理
-                optional_events.append({
-                    "vehicle": vehicle,
-                    "pattern_index": p,
-                    "swap_index": r,
-                    "pattern": pattern,
-                    "select_var": select_var,
-                    "start_var": start_var,
-                })
-
-                if r > 0:
-                    previous_start = start_vars[vehicle, p, r - 1]
-                    travel_and_tasks = T_swap + T_from_station + pattern["segments"][r] * T_run + T_to_station
-                    # 约束3、车辆vehicle模式p第r个换电事件的开始时间必须在前一个换电事件的结束时间加上换电时间和运行时间
-                    model.addConstr(start_var >= previous_start + travel_and_tasks - big_m * (1 - select_var), name=f"vehicle_order_{vehicle}_{p}_{r}")
-
-            if patternSwaps(pattern) > 0:
-                last_r = patternSwaps(pattern) - 1
-                last_start = start_vars[vehicle, p, last_r]
-                final_duration = T_swap + T_from_station + pattern["segments"][-1] * T_run
-                # 约束4、车辆vehicle模式p最后一个换电事件的结束时间必须在H时间内
-                model.addConstr(last_start + final_duration <= H + big_m * (1 - select_var), name=f"final_finish_{vehicle}_{p}")
-
-    # 事件约束1：自由车辆事件与固定日程不重叠
-    for e_index in range(len(optional_events)):
-        event_data = optional_events[e_index]
-        pattern = event_data["pattern"]
-        r = event_data["swap_index"]
-        start_var = event_data["start_var"]
-        select_var = event_data["select_var"]
-
-        earliest = pattern["earliest"][r]
-        latest_end = pattern["latest"][r] + T_swap
-
-        for f_index in range(len(fixed_schedule)):
-            fixed_event = fixed_schedule[f_index]
-
-            # 如果固定事件与自由车辆事件必然不重叠，跳过
-            if fixed_event["end"] <= earliest + 1e-9 or fixed_event["start"] >= latest_end - 1e-9:
-                continue
-            # 变量before表示自由车辆事件是否在固定事件之前发生
-            before = model.addVar(vtype=GRB.BINARY, name=f"fixed_order_{e_index}_{f_index}")
-            # 约束5、自由车辆事件的结束时间必须小于固定事件的开始时间
-            model.addConstr(start_var + T_swap <= fixed_event["start"] + big_m * (1 - before) + big_m * (1 - select_var),
-                name=f"before_fixed_{e_index}_{f_index}",
-            )
-            # 约束6、固定事件的结束时间必须大于自由车辆事件的开始时间
-            model.addConstr(fixed_event["end"] <= start_var + big_m * before + big_m * (1 - select_var),
-                name=f"after_fixed_{e_index}_{f_index}",
-            )
-
-    # 事件约束2：不同自由车辆的事件不重叠
-    for e1 in range(len(optional_events)):
-        data1 = optional_events[e1]
-
-        for e2 in range(e1 + 1, len(optional_events)):
-            data2 = optional_events[e2]
-            # 如果是同车辆的事件，跳过，此前已处理
-            if data1["vehicle"] == data2["vehicle"]:
-                continue
-
-            pattern1 = data1["pattern"]
-            pattern2 = data2["pattern"]
-            r1 = data1["swap_index"]
-            r2 = data2["swap_index"]
-
-            earliest1 = pattern1["earliest"][r1]
-            latest1 = pattern1["latest"][r1]
-            earliest2 = pattern2["earliest"][r2]
-            latest2 = pattern2["latest"][r2]
-
-            # 如果自由车辆事件与固定事件程必然不重叠，跳过
-            if latest1 + T_swap <= earliest2 + 1e-9 or latest2 + T_swap <= earliest1 + 1e-9:
-                continue
-
-            order = model.addVar(vtype=GRB.BINARY, name=f"order_{e1}_{e2}")
-
-            s1 = data1["start_var"]
-            s2 = data2["start_var"]
-            y1 = data1["select_var"]
-            y2 = data2["select_var"]
-
-            model.addConstr(s1 + T_swap <= s2 + big_m * (1 - order) + big_m * (2 - y1 - y2), name=f"nonoverlap_1_{e1}_{e2}")
-            model.addConstr(s2 + T_swap <= s1 + big_m * order + big_m * (2 - y1 - y2), name=f"nonoverlap_2_{e1}_{e2}")
-
-    # 被破坏车辆的新总搬运次数
-    trip_expression = quicksum(
-        candidate_patterns[vehicle][p]["trips"] * y[vehicle, p]
-        for vehicle in destroyed
-        for p in range(len(candidate_patterns[vehicle]))
-    )
-    # 被破坏车辆的新总换电次数
-    swap_expression = quicksum(
-        patternSwaps(candidate_patterns[vehicle][p]) * y[vehicle, p]
-        for vehicle in destroyed
-        for p in range(len(candidate_patterns[vehicle]))
-    )
-    # 约束3、被破坏车辆的新总搬运次数 + 固定的新总搬运次数 <= 上界
-    model.addConstr(trip_expression <= upper_bound["tripUpperBound"] - fixed_trips, name="global_trip_upper_bound")
-
-    # 目标函数优先考虑总搬运次数最大化，再考虑总换电次数最小化
-    objective_weight = I * max(1, upper_bound["N"]) + 1
-    model.setObjective(objective_weight * trip_expression - swap_expression, GRB.MAXIMIZE)
-
-    # 当前解作为MIP热启动，函数currentEventStartMap返回每个事件的开始时间映射
-    start_map = currentEventStartMap(solution)
-
-    for vehicle in destroyed:
-        current_pattern = solution["assignments"][vehicle]
-        patterns = candidate_patterns[vehicle]
-
-        for p in range(len(patterns)):
-            pattern = patterns[p]
-            is_current = patternKey(pattern) == patternKey(current_pattern)
-            y[vehicle, p].Start = 1.0 if is_current else 0.0  # 当前解的模式y[vehicle, p]为1.0，其他为0.0
-
-            if is_current:
-                for r in range(patternSwaps(pattern)):
-                    key = (vehicle, r + 1)
-                    if key in start_map:
-                        start_vars[vehicle, p, r].Start = start_map[key]  # 当前解的事件开始时间start_vars[vehicle, p, r]为start_map[key]
-
-    model.optimize()
-
-    if model.SolCount == 0:
-        return None
-
-    new_assignments = list(solution["assignments"])   # 初始化新解的模式分配为当前解的模式分配
-    new_schedule = list(fixed_schedule)               # 初始化新解的事件计划为固定事件计划
-
-    for vehicle in destroyed:
-        patterns = candidate_patterns[vehicle]
-        selected_index = 0
-        selected_value = -1.0
-
-        # for p in range(len(patterns)):
-        #     if y[vehicle, p].X > selected_value:     # 选择当前解的模式y[vehicle, p]为1.0的模式
-        #         selected_value = y[vehicle, p].X
-        #         selected_index = p
-
-        for p in range(len(patterns)):
-            if y[vehicle, p].X > 0.5:  # 选择当前解的模式y[vehicle, p]为1.0的模式
-                selected_index = p
-
-        pattern = patterns[selected_index]
-        new_assignments[vehicle] = pattern
-
-        for r in range(patternSwaps(pattern)):
-            start = start_vars[vehicle, selected_index, r].X
-
-            new_schedule.append({
-                "vehicle": vehicle,
-                "swap_index": r + 1,
-                "after_trip": pattern["positions"][r],
-                "start": start,
-                "end": start + T_swap,
-            })
-
-    new_schedule.sort(key=eventSortKey)
-
-    candidate = {"assignments": new_assignments, "schedule": new_schedule}
-
-    if not validateSolution(candidate, raise_error=False):
-        return None
-
-    return candidate
-
-
-def runGurobiLns(initial_solution, patterns_by_trips, upper_bound, rng):
-
-    current = copy.deepcopy(initial_solution)
-    best = copy.deepcopy(initial_solution)
-
-    for iteration in range(GUROBI_LNS_ITERATIONS):
-        destroyed = selectDestroyedVehicles(current, rng, iteration, for_gurobi=True)
-        candidate = runGurobiLnsIteration(current, destroyed, patterns_by_trips, upper_bound, rng)
-
-        if candidate is None:
-            print(f"Gurobi-LNS迭代{iteration + 1} / {GUROBI_LNS_ITERATIONS}：释放车辆数={len(destroyed)}")
-            continue
-
-        improved_current = solutionQuality(candidate) >= solutionQuality(current)
-        improved_best = solutionQuality(candidate) > solutionQuality(best)
-
-        if improved_current:
-            current = candidate
-
-        if improved_best:
-            best = copy.deepcopy(candidate)
-
-        print(
-            f"Gurobi-LNS迭代{iteration + 1}/{GUROBI_LNS_ITERATIONS}：候选任务数={totalTrips(candidate)},"
-            f"当前={totalTrips(current)}，最好={totalTrips(best)}，是否刷新最好={improved_best}"
-        )
-
-        if totalTrips(best) >= upper_bound["tripUpperBound"]:
-            print("达到理论上界，提前结束")
-            break
-
-    return best
-
 
 # ============================================================
 # 9. 可行性验证、结果转换和保存
@@ -1235,7 +1572,7 @@ def solutionToCompatibleResults(solution):
 def saveSolution(solution, upper_bound):
     os.makedirs(OUTPUT_DIRECTORY, exist_ok=True)
 
-    stem = f"matheuristic_simple_I_{I}_H_{H}"
+    stem = f"alns_I_{I}_H_{H}"
     pickle_path = os.path.join(OUTPUT_DIRECTORY, stem + ".pkl")
     json_path = os.path.join(OUTPUT_DIRECTORY, stem + ".json")
 
@@ -1368,19 +1705,11 @@ def main():
 
         print(f"贪心构造{restart+1}/{GREEDY_RESTARTS}：任务数={totalTrips(candidate)}，换电数={totalSwaps(candidate)}")
 
-    print("\n================ 执行纯启发式破坏-修复 ================")
-    best_solution = runLocalSearch(best_solution, patternsByTrips, rng)
+    print("\n================ 执行ALNS（纯启发式，无需Gurobi） ================")
+    best_solution, alnsHistory = runALNS(best_solution, patternsByTrips, rng)
     validateSolution(best_solution)
 
-    print(f"破坏-修复后：任务数={totalTrips(best_solution)}，换电数={totalSwaps(best_solution)}")
-
-    if RUN_GUROBI_LNS:
-        if totalTrips(best_solution) < upperBound["tripUpperBound"]:
-            print("\n================ 执行Gurobi大邻域搜索 ================")
-            best_solution = runGurobiLns(best_solution, patternsByTrips, upperBound, rng)
-            validateSolution(best_solution)
-        else:
-            print("\n当前解已经达到理论上界，跳过Gurobi-LNS。")
+    print(f"ALNS后：任务数={totalTrips(best_solution)}，换电数={totalSwaps(best_solution)}")
 
     best_solution = normalizeVehicleLabels(best_solution)
     validateSolution(best_solution)
@@ -1391,6 +1720,9 @@ def main():
     print(f"结果文件：{pickle_path}")
     print(f"JSON文件：{json_path}")
     print(f"总运行时间：{time.time() - start_time:.2f} 秒")
+
+    # 全部求解结束后绘制ALNS阶段的迭代曲线。
+    plotAlnsHistory(alnsHistory)
 
 
 if __name__ == "__main__":
