@@ -11,12 +11,12 @@ import matplotlib.pyplot as plt
 # 1. 基本参数
 # ============================================================
 
-I = 20
+I = 30
 H = 1440
 T_run = 30
 T_swap = 8
-T_to_station = 0
-T_from_station = 20
+T_to_station = 10
+T_from_station = 10
 C_init = 100
 C_swap = 100
 Delta = 10
@@ -47,7 +47,7 @@ GREEDY_RESTARTS = 10
 GREEDY_RCL_SIZE = 5
 
 # ALNS（不依赖Gurobi）
-ALNS_ITERATIONS = 6000
+ALNS_ITERATIONS = 2000
 
 # 每轮随机改变破坏规模，增加邻域多样性
 ALNS_DESTROY_FRACTION_MIN = 0.10
@@ -1715,14 +1715,14 @@ def main():
     validateSolution(best_solution)
     printSolutionSummary(best_solution, upperBound)
 
-    pickle_path, json_path = saveSolution(best_solution, upperBound)
-    print("\n================ 保存结果 ================")
-    print(f"结果文件：{pickle_path}")
-    print(f"JSON文件：{json_path}")
+    # pickle_path, json_path = saveSolution(best_solution, upperBound)
+    # print("\n================ 保存结果 ================")
+    # print(f"结果文件：{pickle_path}")
+    # print(f"JSON文件：{json_path}")
     print(f"总运行时间：{time.time() - start_time:.2f} 秒")
 
-    # 全部求解结束后绘制ALNS阶段的迭代曲线。
-    plotAlnsHistory(alnsHistory)
+    # # 全部求解结束后绘制ALNS阶段的迭代曲线。
+    # plotAlnsHistory(alnsHistory)
 
 
 if __name__ == "__main__":

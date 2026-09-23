@@ -2,13 +2,13 @@ from gurobipy import Model, GRB, quicksum
 import pickle
 
 # 参数设置
-I = 10
-H = 900
+I = 20
+H = 720
 T_run = 30
 T_swap = 8
-T_trip = 20
-T_to_station = 0
-T_from_station = 20
+T_trip = 30
+T_to_station = 10
+T_from_station = 10
 C_init = 100
 C_swap = 100
 Delta = 10
@@ -73,7 +73,7 @@ a = model.addVars(I, J - 1, R, vtype=GRB.BINARY, name="swap_or_not")    # 换电
 u = model.addVars(R, lb=0, ub=latestService, vtype=GRB.CONTINUOUS, name="swap_start_time")   # 第r个换电服务的开始时间
 
 # 目标函数：最大化总运行时间
-model.setObjective(quicksum(T_run * z[i, j] for i in range(I) for j in range(J)), GRB.MAXIMIZE)
+model.setObjective(quicksum(z[i, j] for i in range(I) for j in range(J)), GRB.MAXIMIZE)
 
 # 1. 初始任务约束
 for i in range(I):
@@ -130,9 +130,15 @@ for r in range(R - 1):
     model.addConstr(next_used <= current_used, name=f"slot_continuity_{r}")
     model.addConstr(u[r + 1] >= u[r] + T_swap - M * (1 - next_used), name=f"slot_sequence_{r}")
 
+
+# # 7. 车辆对称性约束
+# for i in range(I - 1):
+#     model.addConstr(quicksum(z[i, j] for j in range(J)) >= quicksum(z[i + 1, j] for j in range(J)), name=f"vehicle_symmetry_{i}")
+
 # 7. 车辆对称性约束
 for i in range(I - 1):
-    model.addConstr(quicksum(z[i, j] for j in range(J)) >= quicksum(z[i + 1, j] for j in range(J)), name=f"vehicle_symmetry_{i}")
+    for j in range(J):
+        model.addConstr(z[i, j] >= z[i + 1, j], name=f"vehicle_symmetry_{i}_{j}")
 
 # 8. 有效不等式
 # 每辆车最多完成N趟
@@ -152,14 +158,14 @@ print(f"车队总任务数上界：{tripUpperBound}")
 print(f"目标函数上界：{tripUpperBound * T_run} 分钟")
 
 # 求解设置
-model.setParam("TimeLimit", 5 * 3600)
+model.setParam("TimeLimit", 3600)
 model.setParam("MIPGap", 0.001)
 model.optimize()
 
 # 结果输出和保存
 if model.SolCount > 0:
-    print(f"当前最好总有效作业时间：{model.ObjVal} 分钟")
-    print(f"当前最优界：{model.ObjBound} 分钟")
+    print(f"当前最好总搬运次数：{model.ObjVal} 次")
+    print(f"当前最优解：{model.ObjBound} 次")
     print(f"当前MIPGap：{model.MIPGap}")
 
     T_results = []
@@ -209,8 +215,8 @@ if model.SolCount > 0:
         "objective": model.ObjVal
     }
 
-    with open(f"compact_results_I_{I}_J_{J}_H_{H}.pkl", "wb") as f:
-        pickle.dump(results, f)
+    # with open(f"compact_results_I_{I}_J_{J}_H_{H}.pkl", "wb") as f:
+    #     pickle.dump(results, f)
 
     print(f"结果已保存到 compact_results_I_{I}_J_{J}_H_{H}.pkl")
 else:

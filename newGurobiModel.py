@@ -2,13 +2,13 @@ from gurobipy import Model, GRB, quicksum
 import pickle
 
 # 参数设置
-I = 10
-H = 480
+I = 20
+H = 720
 T_run = 30
 T_swap = 8
-T_trip = 20
-T_to_station = 0
-T_from_station = 20
+T_trip = 30
+T_to_station = 10
+T_from_station = 10
 C_init = 100
 C_swap = 100
 Delta = 10
@@ -35,7 +35,7 @@ a = model.addVars(I, J - 1, R, vtype=GRB.BINARY, name="a")  # 换电服务变量
 u = model.addVars(R, lb=0, ub=latest_swap, vtype=GRB.CONTINUOUS, name="u")
 
 # 目标函数：最大化总运行时间
-model.setObjective(quicksum(T_run * z[i, j] for i in range(I) for j in range(J)), GRB.MAXIMIZE)
+model.setObjective(quicksum(z[i, j] for i in range(I) for j in range(J)), GRB.MAXIMIZE)
 
 # 1. 初始任务约束
 for i in range(I):
@@ -107,8 +107,8 @@ model.optimize()
 
 # 结果输出和保存
 if model.SolCount > 0:
-    print(f"当前最好总有效作业时间：{model.ObjVal} 分钟")
-    print(f"当前最优界：{model.ObjBound} 分钟")
+    print(f"当前最好总搬运次数：{model.ObjVal} 次")
+    print(f"当前最优解：{model.ObjBound} 次")
     print(f"当前MIPGap：{model.MIPGap}")
 
     T_results = []
@@ -158,8 +158,8 @@ if model.SolCount > 0:
         "objective": model.ObjVal
     }
 
-    with open(f"compact_results_I_{I}_J_{J}_H_{H}.pkl", "wb") as f:
-        pickle.dump(results, f)
+    # with open(f"compact_results_I_{I}_J_{J}_H_{H}.pkl", "wb") as f:
+    #     pickle.dump(results, f)
 
     print(f"结果已保存到 compact_results_I_{I}_J_{J}_H_{H}.pkl")
 else:
