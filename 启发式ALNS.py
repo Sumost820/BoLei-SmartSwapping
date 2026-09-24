@@ -13,12 +13,10 @@ import matplotlib.pyplot as plt
 
 I = 30
 H = 1440
-T_run = 30
-T_swap = 8
-T_to_station = 10
-T_from_station = 10
-C_init = 100
-C_swap = 100
+T_run = 35
+T_swap = 10
+T_to_station = T_from_station = 10
+C_init = C_swap = 80
 Delta = 10
 C_min = 25
 

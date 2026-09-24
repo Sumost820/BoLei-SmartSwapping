@@ -2,18 +2,16 @@ from gurobipy import Model, GRB, quicksum
 import pickle
 
 # 参数设置
-I = 20
-H = 720
-T_run = 30
-T_swap = 8
-T_trip = 30
-T_to_station = 10
-T_from_station = 10
-C_init = 100
-C_swap = 100
+I = 10
+H = 540
+T_run = 35
+T_swap = 10
+T_to_station = T_from_station = 10
+C_init = C_swap = 80
 Delta = 10
 C_min = 25
 J = H // T_run    # 最大任务数
+print(J)
 K = (C_swap - C_min) // Delta    # 最大连续执行任务数
 
 # 计算单车最大任务数N及达到N趟的车辆数上界B
@@ -56,12 +54,13 @@ else:
     B = min(I, stationCapacity // minSwaps, classBoundSum)
 
 tripUpperBound = I * (N - 1) + B       # 车队最大总任务数
-
 R = stationCapacity   # 最多换电服务次数
+J = N   # 更新后的最大任务数
+print(N)
 
 # 时间变量上界和大M
-T_upper = H + J * (T_run + T_swap + T_trip)
-M = T_upper + H + T_swap + T_trip + T_run
+T_upper = H + J * (T_run + T_swap)
+M = T_upper + H + T_swap  + T_run
 
 # 模型
 model = Model("Battery_Swap_Scheduling")
@@ -152,13 +151,20 @@ if N > 0:
 # 车队总任务数上界
 model.addConstr(quicksum(z[i, j] for i in range(I) for j in range(J)) <= tripUpperBound, name="fleet_trip_upper_bound")
 
+# 时间约束
+for i in range(I):
+    model.addConstr(
+        T_run * quicksum(z[i, j] for j in range(J)) + swapExtraTime * quicksum(a[i, j, r] for j in range(J - 1) for r in range(R))
+        <= H, name=f"vehicle_time_capacity_{i}"
+    )
+
 print(f"单车最大任务数N：{N}")
 print(f"完成N趟的车辆数上界B：{B}")
 print(f"车队总任务数上界：{tripUpperBound}")
 print(f"目标函数上界：{tripUpperBound * T_run} 分钟")
 
 # 求解设置
-model.setParam("TimeLimit", 3600)
+model.setParam("TimeLimit", 600)
 model.setParam("MIPGap", 0.001)
 model.optimize()
 
