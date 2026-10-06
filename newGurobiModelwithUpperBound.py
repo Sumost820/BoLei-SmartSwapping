@@ -2,10 +2,10 @@ from gurobipy import Model, GRB, quicksum
 import pickle
 
 # 参数设置
-I = 10
-H = 540
+I = 18
+H = 360
 T_run = 35
-T_swap = 10
+T_swap = 12
 T_to_station = T_from_station = 10
 C_init = C_swap = 80
 Delta = 10
@@ -164,7 +164,7 @@ print(f"车队总任务数上界：{tripUpperBound}")
 print(f"目标函数上界：{tripUpperBound * T_run} 分钟")
 
 # 求解设置
-model.setParam("TimeLimit", 600)
+model.setParam("TimeLimit", 3600)
 model.setParam("MIPGap", 0.001)
 model.optimize()
 
@@ -197,6 +197,9 @@ if model.SolCount > 0:
                     break
 
     station_schedule.sort()
+
+    total_swaps = len(station_schedule)
+    print(f"换电总次数：{total_swaps} 次")
 
     for i in range(I):
         energy = C_init
